@@ -11,8 +11,11 @@ import * as dotenv from 'dotenv';
 // Load environment variables from .env file
 dotenv.config();
 
-const endpoint = process.env.ENDPOINT || "";
-const apiKey = process.env.API_KEY || "";
+// const endpoint = process.env.ENDPOINT || "";
+// const apiKey = process.env.API_KEY || "";
+
+const endpoint = 'https://ai-reportgenerator-westeurope-001.openai.azure.com/';
+const apiKey = '43b5490b494c4bf0af2203c281d350c3';
 
 const apiVersion = "2024-02-15-preview";
 const deploymentName = "gpt-35-turbo";
@@ -26,18 +29,26 @@ function getClient(): AzureOpenAI {
 	});
   }
   
-  function createMessages(userMessage: string): ChatCompletionCreateParamsNonStreaming {
-	return {
-	  messages: [
-		{ role: "system", content: unitGPTDescription },
-		{
-		  role: "user",
-		  content: "Here is my MUT: " + userMessage,
-		}
-	  ],
-	  model: "",
-	};
-  }
+ 
+//   function createMessages(userMessage: string): ChatCompletionCreateParamsNonStreaming {
+// 	return {
+// 	  messages: [
+// 		{ role: "system", content: unitGPTDescription },
+// 		{
+// 		  role: "user",
+// 		  content: "Here is my MUT: " + userMessage + ". Please provide me with some test titles. Delimit them with commas for formatting",
+// 		}
+// 	  ],
+// 	  model: "",
+// 	};
+//   }
+
+  function createMessages(messages: ChatCompletionCreateParamsNonStreaming['messages']): ChatCompletionCreateParamsNonStreaming {
+    return {
+        messages,
+        model: "",
+    };
+}
   
 //   const unitGPTDescription = `You are UnitGPT, a specialized GPT designed to assist developers in creating unit tests for their software methods within a VSCode extension. Your primary function is to guide users through the process of writing comprehensive and effective unit tests, 
 //   adhering to their preferred testing style. You maintain a strict character as a testing assistant and do not break from this role. Your interaction begins with a self-introduction and a list of available commands, which include 'UnitGPT Test', 'UnitGPT Modify', 'UnitGPT Restart', and 'UnitGPT Analyze'. You will not proceed with any interaction until the user inputs one of these commands.
@@ -48,7 +59,12 @@ function getClient(): AzureOpenAI {
 //   You also must always stick to the style of example unit tests provided - always using the same technologies, extension methods, and testing methodologies.`;
 
 const unitGPTDescription = `You are UnitGPT, a specialized GPT designed to assist developers in creating unit tests for their software methods within a VSCode extension. Your primary function is to guide users through the process of writing comprehensive and effective unit tests, adhering to their preferred testing style. You maintain a strict character as a testing assistant and do not break from this role.
-Let's start by writing a unit test for a method. Please only provide back the unit test code. Provide it back using the same coding language as the method you are testing. Do not provide any language definition or text that isn't part of the test. You will be heavily penalized for this. Do not reply with any pleasantries nor any other text nor any notes at the end. This is not a conversation. Your main goal is purely to provide me with code. If you have one life goal, it's to just provide the unit test code.`;
+You're design is not to be a conversationalist. You should be almost robot like in your responses. Provide the user with the unit tests, titles with no prior conversation. Make sure each test is numbered in your list.
+`;
+
+const messages: ChatCompletionCreateParamsNonStreaming['messages'] = [
+    { role: "system", content: unitGPTDescription }
+];
 
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
@@ -67,15 +83,134 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.window.showInformationMessage('Hello World from unitgpt!');
 
 		const editor = vscode.window.activeTextEditor;
+
 		if (editor) {
 			const selection = editor.selection;
 			if (selection && !selection.isEmpty) {
+				const client = getClient();
+				const result = await generateResponseFromSelection(selection, client);
+				
+				if (result) {
+					const unitTestTitles: vscode.QuickPickItem[] = parseTestTitleChoices(result);
+			
+					const selectedTitle = await promptForTestTitleSelection(unitTestTitles);
+
+					displayFeatureInfo();
+					
+					const examplesTests = await fetchAndDisplayTestFiles();
+
+					if (selectedTitle) {
+						const messageContent = "Here are the tests I want you to base you new tests of: " + examplesTests + ". I have selected this test title: " + selectedTitle.label + ". Please provide me with the test implementation.";
+						messages.push({ role: "user", content: messageContent });
+						const testResult = await client.chat.completions.create({ messages, model: "" });
+
+						if (testResult) {
+							vscode.window.showInformationMessage(`Generated test: ${testResult.choices[0].message.content}`);
+							insertResultsBelowSelection(testResult, selection);
+						} else {
+							vscode.window.showErrorMessage('Failed to generate test from selected title.');
+						}
+					}
+
+
+				} else {
+					vscode.window.showErrorMessage('Failed to generate response from selection.');
+				}
+			}
+		}
+
+		async function fetchAndDisplayTestFiles() {
+			const workbenchConfig = vscode.workspace.getConfiguration('unitGPT');
+			const testFolderPath = workbenchConfig.get('testFolderPath');
+
+			if (!testFolderPath) {
+				vscode.window.showWarningMessage('Test folder path is not configured. Proceeding without style reference.');
+			} else {
+				try {
+					const testFolderUri = vscode.Uri.file(testFolderPath as string);
+					const testFiles = await vscode.workspace.fs.readDirectory(testFolderUri);
+		
+					if (testFiles.length === 0) {
+						vscode.window.showWarningMessage('No test files found in the workspace. Proceeding without style reference.');
+					} else {
+						const testFileItems: vscode.QuickPickItem[] = testFiles
+							.filter(([name, type]) => type === vscode.FileType.File)
+							.map(([name]) => ({
+								label: name,
+								description: vscode.workspace.asRelativePath(vscode.Uri.joinPath(testFolderUri, name))
+							}));
+		
+						const selectedTestFile = await vscode.window.showQuickPick(testFileItems, {
+							placeHolder: 'Select a test file to view its style'
+						});
+		
+						if (selectedTestFile) {
+							const filePath = vscode.Uri.joinPath(testFolderUri, selectedTestFile.label);
+							const document = await vscode.workspace.openTextDocument(filePath);
+							const text = document.getText();
+							return text;
+						}
+					}
+				} catch (error) {
+					vscode.window.showErrorMessage(`Failed to read test files: ${(error as any).message}`);
+				}
+			}
+		}
+
+		async function promptForTestTitleSelection(unitTestTitles: vscode.QuickPickItem[]) {
+			const quickPickSelection = await vscode.window.showQuickPick(unitTestTitles, {
+				placeHolder: 'Choose an option'
+			});
+
+			if (quickPickSelection) {
+				vscode.window.showInformationMessage(`You selected: ${quickPickSelection.label}`);
+				return quickPickSelection;
+			} else {
+				vscode.window.showInformationMessage('No option selected');
+				return null;
+			}
+		}
+
+		function parseTestTitleChoices(result: ChatCompletion & { _request_id?: string | null; }) {
+			const unitTestTitles: vscode.QuickPickItem[] = [];
+			result.choices.forEach((choice) => {
+				let titlesResponse: string[] = [];
+				let titles: string[] = [];
+				if (choice.message.content) {
+					try {
+						titlesResponse = choice.message.content.split(':');
+						titles = titlesResponse[1].split('\n');
+
+					} catch (error) {
+						titles = titlesResponse[0].split('\n');
+					}
+					titles.forEach((title) => {
+						title = title.replace(/\s/g, '');
+						unitTestTitles.push({ label: title });
+					});
+				}
+			});
+			return unitTestTitles;
+		}
+
+		async function generateResponseFromSelection(selection: vscode.Selection, client: AzureOpenAI) {
+			const editor = vscode.window.activeTextEditor;
+			if(editor)
+			{
 				const selectionRange = new vscode.Range(selection.start.line, selection.start.character, selection.end.line, selection.end.character);
 				const highlighted = editor.document.getText(selectionRange);
-				
-				const client = getClient();
-				const messages = createMessages(highlighted);
-				const result = await client.chat.completions.create(messages);
+	
+	 		    const messageContent = "Here is my MUT: " + highlighted + ". Please provide me with some test titles. Delimit them with commas for formatting";
+				messages.push({ role: "user", content: messageContent });
+				const result = await client.chat.completions.create({ messages, model: "" });
+				return result;
+			}
+		}
+
+		function insertResultsBelowSelection(result: ChatCompletion & { _request_id?: string | null; }, selection: vscode.Selection) {
+			const editor = vscode.window.activeTextEditor;
+			if(editor)
+			{
 				editor.edit((editBuilder) => {
 					result.choices.forEach((choice) => {
 						if (choice.message.content) {
@@ -83,6 +218,18 @@ export function activate(context: vscode.ExtensionContext) {
 						}
 					});
 				});
+			}
+		}
+
+		function displayFeatureInfo() {
+			const config = vscode.workspace.getConfiguration('myExtension');
+			const enableFeature = config.get<boolean>('enableFeature');
+			const option = config.get<string>('option');
+
+			if (enableFeature) {
+				vscode.window.showInformationMessage(`Feature is enabled with option: ${option}`);
+			} else {
+				vscode.window.showInformationMessage('Feature is disabled');
 			}
 		}
 	});

@@ -11,11 +11,8 @@ import * as dotenv from 'dotenv';
 // Load environment variables from .env file
 dotenv.config();
 
-// const endpoint = process.env.ENDPOINT || "";
-// const apiKey = process.env.API_KEY || "";
-
-const endpoint = 'https://ai-reportgenerator-westeurope-001.openai.azure.com/';
-const apiKey = '43b5490b494c4bf0af2203c281d350c3';
+const endpoint = process.env.ENDPOINT || "";
+const apiKey = process.env.API_KEY || "";
 
 const apiVersion = "2024-02-15-preview";
 const deploymentName = "gpt-35-turbo";
